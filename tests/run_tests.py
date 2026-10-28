@@ -305,22 +305,34 @@ def e2e_tests():
     check("upstream hit exactly 3 times", hits == 3, f"got {hits}")
 
     print("e2e: pool cooling 503 is recognised and spaced out")
-    t0 = time.time()
-    st, hd, data, hits, _, rp = run_pair("cooling", 1,
-                                         relay_flags=["--cooling-wait", "1.0",
-                                                      "--cooling-latency", "0.5"])
-    elapsed = time.time() - t0
-    check("client saw 200", st == 200, f"got {st}")
-    check("waited at least the cooling delay", elapsed > 1.0, f"{elapsed:.2f}s")
+    # Timing covers only the request: on slow CI runners spawning the two
+    # children alone can take ~70s, which is not what these assert on.
+    mock, relayp, mport, rport = start_mock_and_relay(
+        "cooling", 1,
+        relay_flags=["--cooling-wait", "1.0", "--cooling-latency", "0.5"])
+    try:
+        t0 = time.time()
+        st, hd, data = http_post(rport)
+        elapsed = time.time() - t0
+        check("client saw 200", st == 200, f"got {st}")
+        check("waited at least the cooling delay", elapsed > 1.0, f"{elapsed:.2f}s")
+    finally:
+        relayp.stop()
+        mock.stop()
 
     print("e2e: cooling detection stays off in direct mode unless asked")
-    t0 = time.time()
-    st, hd, data, hits, _, rp = run_pair("cooling", 1,
-                                         relay_flags=["--cooling-wait", "5.0"])
-    elapsed = time.time() - t0
-    check("client saw 200", st == 200, f"got {st}")
-    check("fast 503 treated as a normal retry (no cooling wait)",
-          elapsed < 3.0, f"{elapsed:.2f}s")
+    mock, relayp, mport, rport = start_mock_and_relay(
+        "cooling", 1, relay_flags=["--cooling-wait", "5.0"])
+    try:
+        t0 = time.time()
+        st, hd, data = http_post(rport)
+        elapsed = time.time() - t0
+        check("client saw 200", st == 200, f"got {st}")
+        check("fast 503 treated as a normal retry (no cooling wait)",
+              elapsed < 3.0, f"{elapsed:.2f}s")
+    finally:
+        relayp.stop()
+        mock.stop()
 
     print("e2e: give-up returns 503 + Retry-After + JSON (not 200/SSE)")
     st, hd, data, hits, _, rp = run_pair("always503", 999)
