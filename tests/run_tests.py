@@ -95,19 +95,42 @@ def http_get(port, path):
         return resp.status, json.loads(resp.read())
 
 
+def start_mock_and_relay(mode, fails, mock_flags=(), relay_flags=()):
+    """Start mock + relay on fresh ports, retrying on the port race.
+
+    free_port() releases the socket before the child binds it, so on a busy
+    CI runner the chosen port can be snatched in between and the child dies
+    with "address already in use" (observed as a flake on macos-latest).
+    Re-rolling the ports a few times makes that harmless.
+    """
+    last_out = ""
+    for _ in range(4):
+        mport, rport = free_port(), free_port()
+        mock = Running([PY, MOCK, mode, str(fails), str(mport)] + list(mock_flags))
+        if not wait_port(mport, timeout=15):
+            last_out = mock.tail(5)
+            continue
+        # relay_flags may contain "{mport}" placeholders (e.g. for --upstream).
+        flags = [f.format(mport=mport) for f in relay_flags]
+        relayp = Running([PY, RELAY, "--port", str(rport),
+                          "--upstream", f"http://127.0.0.1:{mport}",
+                          "--backoff-base", "0.05", "--backoff-max", "0.2",
+                          "--max-attempts", "6", "--conn-budget", "6",
+                          "--retries-per-sec", "0"] + flags)
+        if not wait_port(rport, timeout=15):
+            last_out = relayp.tail(5)
+            relayp.stop()
+            mock.stop()
+            continue
+        return mock, relayp, mport, rport
+    raise AssertionError(f"mock/relay did not start (mode={mode}); last output:\n{last_out}")
+
+
 def run_pair(mode, fails, relay_flags=(), mock_flags=(), body=b'{"model":"mock","input":[]}',
              timeout=150):
     """Start mock + relay, return (status, headers, body, mock_hits, relay_log, relay)."""
-    mport, rport = free_port(), free_port()
-    mock = Running([PY, MOCK, mode, str(fails), str(mport)] + list(mock_flags))
-    relayp = Running([PY, RELAY, "--port", str(rport),
-                      "--upstream", f"http://127.0.0.1:{mport}",
-                      "--backoff-base", "0.05", "--backoff-max", "0.2",
-                      "--max-attempts", "6", "--conn-budget", "6",
-                      "--retries-per-sec", "0"] + list(relay_flags))
+    mock, relayp, mport, rport = start_mock_and_relay(mode, fails, mock_flags, relay_flags)
     try:
-        assert wait_port(mport), "mock did not start"
-        assert wait_port(rport), "relay did not start"
         if body is None:
             return None, None, None, 0, "", relayp
         status, headers, data = http_post(rport, body=body, timeout=timeout)
@@ -300,15 +323,20 @@ def e2e_tests():
     check("body is a JSON error", b"relay_retries_exhausted" in data, data[:160])
 
     print("e2e: dead upstream fails fast instead of thinking for 5 minutes")
-    rport = free_port()
     dead = free_port()          # nothing listening there
-    rp = Running([PY, RELAY, "--port", str(rport),
-                  "--upstream", f"http://127.0.0.1:{dead}",
-                  "--backoff-base", "0.05", "--backoff-max", "0.2",
-                  "--max-attempts", "30", "--max-conn-attempts", "3",
-                  "--conn-budget", "4", "--retries-per-sec", "0"])
+    for _ in range(4):
+        rport = free_port()
+        rp = Running([PY, RELAY, "--port", str(rport),
+                      "--upstream", f"http://127.0.0.1:{dead}",
+                      "--backoff-base", "0.05", "--backoff-max", "0.2",
+                      "--max-attempts", "30", "--max-conn-attempts", "3",
+                      "--conn-budget", "4", "--retries-per-sec", "0"])
+        if wait_port(rport, timeout=15):
+            break
+        rp.stop()
+    else:
+        raise AssertionError("relay did not start (dead-upstream case)")
     try:
-        assert wait_port(rport)
         t0 = time.time()
         st, hd, data = http_post(rport)
         elapsed = time.time() - t0
@@ -319,13 +347,8 @@ def e2e_tests():
         rp.stop()
 
     print("e2e: health endpoint")
-    mport, rport = free_port(), free_port()
-    mock = Running([PY, MOCK, "sse502", "0", str(mport)])
-    relayp = Running([PY, RELAY, "--port", str(rport),
-                      "--upstream", f"http://127.0.0.1:{mport}",
-                      "--backoff-base", "0.05", "--retries-per-sec", "0"])
+    mock, relayp, mport, rport = start_mock_and_relay("sse502", 0)
     try:
-        assert wait_port(mport) and wait_port(rport)
         http_post(rport)
         st, snap = http_get(rport, "/__relay/health")
         check("health is 200", st == 200)
@@ -338,14 +361,10 @@ def e2e_tests():
         mock.stop()
 
     print("e2e: --mode gateway reports mode and needs no explicit port/upstream")
-    mport, rport = free_port(), free_port()
-    mock = Running([PY, MOCK, "sse502", "0", str(mport)])
-    relayp = Running([PY, RELAY, "--mode", "gateway",
-                      "--port", str(rport),
-                      "--upstream", f"http://127.0.0.1:{mport}/v1",
-                      "--backoff-base", "0.05", "--retries-per-sec", "0"])
+    mock, relayp, mport, rport = start_mock_and_relay(
+        "sse502", 0,
+        relay_flags=["--mode", "gateway", "--upstream", "http://127.0.0.1:{mport}/v1"])
     try:
-        assert wait_port(mport) and wait_port(rport)
         st, hd, data = http_post(rport)
         check("gateway mode still proxies",
               st == 200 and b"MOCK_" in (data or b"") and b"OK" in (data or b""),
@@ -357,13 +376,10 @@ def e2e_tests():
         mock.stop()
 
     print("e2e: --upstream with a trailing /v1 is normalised (no /v1/v1 404)")
-    mport, rport = free_port(), free_port()
-    mock = Running([PY, MOCK, "sse502", "0", str(mport)])
-    relayp = Running([PY, RELAY, "--port", str(rport),
-                      "--upstream", f"http://127.0.0.1:{mport}/v1",
-                      "--backoff-base", "0.05", "--retries-per-sec", "0"])
+    mock, relayp, mport, rport = start_mock_and_relay(
+        "sse502", 0,
+        relay_flags=["--upstream", "http://127.0.0.1:{mport}/v1"])
     try:
-        assert wait_port(mport) and wait_port(rport)
         st, hd, data = http_post(rport)
         check("still 200", st == 200, f"got {st}")
         check("answer intact", b"MOCK_" in data and b"OK" in data, data[:120])
