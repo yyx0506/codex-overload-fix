@@ -81,7 +81,10 @@ key. On macOS, if Gatekeeper complains about a downloaded file: right-click →
 Open → Open. Central-relay deployments can also pass `--base-url` /
 `--config`-level overrides — see `tools/configure_codex.py --help`.
 
-Everything the installers change is reversible:
+Everything the installers change is reversible — by double-click, too:
+`scripts/quick-uninstall.bat` / `quick-uninstall.command` stop the relay,
+remove the autostart entry, and restore `config.toml` from the pre-install
+backup in one go. Or by hand:
 
 ```
 bash scripts/uninstall-mac.sh                      # stops the relay (or uninstall.ps1 / uninstall-linux.sh)

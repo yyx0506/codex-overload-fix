@@ -74,7 +74,9 @@ macOS 如果提示「来自互联网」无法打开：右键文件 → 打开 �
 集中部署（中继放在服务器上）时可用 `tools/configure_codex.py --base-url ...` 指向
 公共中继地址。
 
-安装器做的所有改动都可逆：
+安装器做的所有改动都可逆——**还原也是双击**：
+`scripts/quick-uninstall.bat` / `quick-uninstall.command` 一步完成
+「停掉 relay + 移除开机自启 + 从装机前备份恢复 config.toml」。也可以手动分步：
 
 ```
 bash scripts/uninstall-mac.sh                      # 停掉中继（Windows/Linux 对应 uninstall.ps1 / uninstall-linux.sh）
