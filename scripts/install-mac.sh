@@ -1,17 +1,30 @@
 #!/bin/bash
-# Codex Overload Fix - macOS installer.
+# Codex Overload Fix - macOS installer (universal edition).
 #
 # Registers relay/relay.py as a per-user LaunchAgent. No admin rights, and no
 # watchdog: launchd restarts the process itself (KeepAlive), and a LaunchAgent
 # has no console window to flash. None of the Windows SW_HIDE machinery is
 # needed here.
 #
+# Works on Apple Silicon (M-series) and Intel Macs alike: the relay is pure
+# stdlib Python with no compiled extensions, so the CPU architecture never
+# comes into it. Any Python 3.9+ (the macOS-bundled one, brew's, or
+# python.org's, universal or not) runs it.
+#
+# Two modes:
+#   --mode direct    Codex -> relay(8787) -> chatgpt.com          (your account)
+#   --mode gateway   Codex -> relay(8788) -> sub2api/cockpit-tools -> upstream
+#                    needs --upstream, e.g. http://127.0.0.1:8888
+#
 # Verification status: exercised end-to-end on macOS in CI
 # (.github/workflows/macos.yml) -- launchctl accepts the plist, the agent
 # reports state = running, the relay listens, and uninstall removes it.
 set -euo pipefail
 
-PORT=8787
+MODE="direct"
+PORT=""
+UPSTREAM=""
+API_KEY_ENV="SUB2API_API_KEY"
 PROXY=""
 PYTHON_PATH=""
 STATE_DIR="$HOME/Library/Application Support/codex-overload-fix"
@@ -29,18 +42,30 @@ usage() {
     cat <<'EOF'
 usage: install-mac.sh [options]
 
-  --port PORT         Local port for the relay (default 8787)
-  --proxy URL         Upstream proxy, e.g. http://127.0.0.1:7890
-  --python-path PATH  Use this interpreter instead of the first python3 on PATH
-  --state-dir DIR     Where the log lives
-  --no-autostart      Write the plist but do not load it now
-  --dry-run           Print the plist and the commands; change nothing
-  -h, --help          This message
+  --mode direct|gateway  direct: relay in front of chatgpt.com, your own
+                         account (default). gateway: relay in front of an
+                         account-pool gateway (sub2api, cockpit-tools, ...);
+                         requires --upstream
+  --upstream URL         gateway address, e.g. http://127.0.0.1:8888 or
+                         https://sub2api.company.com; a trailing /v1 is fine
+  --api-key-env NAME     env var Codex reads the gateway API key from
+                         (gateway mode only, default SUB2API_API_KEY)
+  --port PORT            local port for the relay (default 8787 direct /
+                         8788 gateway)
+  --proxy URL            upstream proxy, e.g. http://127.0.0.1:7890
+  --python-path PATH     Use this interpreter instead of the first python3 on PATH
+  --state-dir DIR        Where the log lives
+  --no-autostart         Write the plist but do not load it now
+  --dry-run              Print the plist and the commands; change nothing
+  -h, --help             This message
 EOF
 }
 
 while [ $# -gt 0 ]; do
     case "$1" in
+        --mode)         [ $# -ge 2 ] || die "--mode needs a value";         MODE="$2"; shift 2 ;;
+        --upstream)     [ $# -ge 2 ] || die "--upstream needs a value";     UPSTREAM="$2"; shift 2 ;;
+        --api-key-env)  [ $# -ge 2 ] || die "--api-key-env needs a value";  API_KEY_ENV="$2"; shift 2 ;;
         --port)         [ $# -ge 2 ] || die "--port needs a value";         PORT="$2"; shift 2 ;;
         --proxy)        [ $# -ge 2 ] || die "--proxy needs a value";        PROXY="$2"; shift 2 ;;
         --python-path)  [ $# -ge 2 ] || die "--python-path needs a value";  PYTHON_PATH="$2"; shift 2 ;;
@@ -51,6 +76,15 @@ while [ $# -gt 0 ]; do
         *)              die "unknown option: $1 (try --help)" ;;
     esac
 done
+
+case "$MODE" in
+    direct|gateway) ;;
+    *) die "--mode must be 'direct' or 'gateway', got: $MODE" ;;
+esac
+if [ "$MODE" = "gateway" ] && [ -z "$UPSTREAM" ]; then
+    die "--mode gateway needs --upstream, e.g. --upstream http://127.0.0.1:8888"
+fi
+[ -n "$PORT" ] || { [ "$MODE" = "gateway" ] && PORT=8788 || PORT=8787; }
 
 case "$PORT" in
     ''|*[!0-9]*) die "port must be a number: $PORT" ;;
@@ -69,7 +103,7 @@ fi
 [ -x "$PYTHON_PATH" ] || die "not executable: $PYTHON_PATH"
 "$PYTHON_PATH" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' \
     || die "Python 3.9+ required; $PYTHON_PATH is $("$PYTHON_PATH" --version 2>&1)"
-ok "Python $("$PYTHON_PATH" -c 'import sys; print("%d.%d" % sys.version_info[:2])') at $PYTHON_PATH"
+ok "Python $("$PYTHON_PATH" -c 'import sys; print("%d.%d" % sys.version_info[:2])') at $PYTHON_PATH ($("$PYTHON_PATH" -c 'import platform; print(platform.machine())'))"
 
 LOG_PATH="$STATE_DIR/relay.log"
 OUT_PATH="$STATE_DIR/relay.out"   # launchd's stdout/stderr, kept apart from the relay's own log
@@ -85,8 +119,22 @@ except OSError:
 PY
 }
 
+# Never put the relay on the gateway's own port.
+if [ "$MODE" = "gateway" ]; then
+    GUP_PORT="$(UPSTREAM="$UPSTREAM" "$PYTHON_PATH" - <<'PY'
+import os, re
+u = os.environ["UPSTREAM"]
+m = re.search(r":(\d+)(/|$)", u)
+print(m.group(1) if m else ("443" if u.startswith("https") else "80"))
+PY
+)"
+    [ "$GUP_PORT" != "$PORT" ] || die "the relay port equals the gateway port ($PORT); pass --port to pick another"
+fi
+
 # ---------------------------------------------------------------- dry run
 if [ "$DRY_RUN" -eq 1 ]; then
+    say "mode:     $MODE"
+    [ -n "$UPSTREAM" ] && say "upstream: $UPSTREAM"
     say "port:      $PORT"
     say "relay:     $RELAY"
     say "log:       $LOG_PATH"
@@ -100,13 +148,13 @@ if [ "$DRY_RUN" -eq 1 ]; then
     say "plist that would be written:"
     say "----------------------------------------"
     DRY=1 LABEL="$LABEL" PLIST_PATH="$PLIST_PATH" PY_PATH="$PYTHON_PATH" RELAY="$RELAY" \
-        PORT="$PORT" LOG_PATH="$LOG_PATH" OUT_PATH="$OUT_PATH" STATE_DIR="$STATE_DIR" PROXY="$PROXY" \
+        MODE="$MODE" UPSTREAM="$UPSTREAM" PORT="$PORT" LOG_PATH="$LOG_PATH" OUT_PATH="$OUT_PATH" STATE_DIR="$STATE_DIR" PROXY="$PROXY" \
         "$PYTHON_PATH" - <<'PY'
 import os, plistlib
 e = os.environ
-args = [e["PY_PATH"], e["RELAY"], "--port", e["PORT"], "--log", e["LOG_PATH"],
-        "--max-attempts", "30", "--backoff-base", "1", "--backoff-max", "8",
-        "--total-budget", "300", "--commit-deadline", "120"]
+args = [e["PY_PATH"], e["RELAY"], "--mode", e["MODE"], "--port", e["PORT"], "--log", e["LOG_PATH"]]
+if e.get("UPSTREAM"):
+    args += ["--upstream", e["UPSTREAM"]]
 if e.get("PROXY"):
     args += ["--proxy", e["PROXY"]]
 plist = {
@@ -129,13 +177,13 @@ mkdir -p "$STATE_DIR" "$(dirname "$PLIST_PATH")"
 
 # ---------------------------------------------------------------- write plist
 LABEL="$LABEL" PLIST_PATH="$PLIST_PATH" PY_PATH="$PYTHON_PATH" RELAY="$RELAY" \
-    PORT="$PORT" LOG_PATH="$LOG_PATH" OUT_PATH="$OUT_PATH" STATE_DIR="$STATE_DIR" PROXY="$PROXY" \
+    MODE="$MODE" UPSTREAM="$UPSTREAM" PORT="$PORT" LOG_PATH="$LOG_PATH" OUT_PATH="$OUT_PATH" STATE_DIR="$STATE_DIR" PROXY="$PROXY" \
     "$PYTHON_PATH" - <<'PY'
 import os, plistlib
 e = os.environ
-args = [e["PY_PATH"], e["RELAY"], "--port", e["PORT"], "--log", e["LOG_PATH"],
-        "--max-attempts", "30", "--backoff-base", "1", "--backoff-max", "8",
-        "--total-budget", "300", "--commit-deadline", "120"]
+args = [e["PY_PATH"], e["RELAY"], "--mode", e["MODE"], "--port", e["PORT"], "--log", e["LOG_PATH"]]
+if e.get("UPSTREAM"):
+    args += ["--upstream", e["UPSTREAM"]]
 if e.get("PROXY"):
     args += ["--proxy", e["PROXY"]]
 plist = {
@@ -185,7 +233,38 @@ else
 fi
 
 # ---------------------------------------------------------------- next steps
-cat <<EOF
+if [ "$MODE" = "gateway" ]; then
+    cat <<EOF
+
+Add this to ~/.codex/config.toml, then restart Codex:
+
+model_provider = "gateway-retry"
+
+[model_providers.gateway-retry]
+name = "Gateway (retry)"
+base_url = "http://127.0.0.1:$PORT/v1"
+wire_api = "responses"
+env_key = "$API_KEY_ENV"
+stream_max_retries = 20
+request_max_retries = 10
+
+The key itself is NOT stored anywhere by the installer: export it in your
+shell profile so Codex can read it,
+
+    export $API_KEY_ENV="sk-...your-gateway-key..."
+
+Works on Apple Silicon and Intel Macs - the relay is pure Python.
+
+Keep a backup of config.toml before editing.
+
+Log:     $LOG_PATH
+Stop:    bash scripts/uninstall-mac.sh
+
+If you move or delete this folder, re-run the installer; launchd points at the
+absolute path of relay/relay.py.
+EOF
+else
+    cat <<EOF
 
 Add this to ~/.codex/config.toml, then restart Codex:
 
@@ -207,3 +286,4 @@ Stop:    bash scripts/uninstall-mac.sh
 If you move or delete this folder, re-run the installer; launchd points at the
 absolute path of relay/relay.py.
 EOF
+fi

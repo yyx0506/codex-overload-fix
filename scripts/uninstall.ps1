@@ -1,14 +1,14 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Stop the Codex overload relay and remove its autostart entry.
+    Stop the relay and remove its autostart entry.
 
 .DESCRIPTION
     Removes the HKCU Run entry, terminates the watchdog and relay processes,
     and optionally deletes the generated launchers and logs.
 
-    It does NOT touch your Codex config.toml - you have to remove the
-    model_provider line yourself so you can see exactly what changed.
+    It does NOT touch your Codex config.toml - you remove the provider block
+    yourself so you can see exactly what changed.
 
 .PARAMETER Purge
     Also delete %LOCALAPPDATA%\codex-overload-fix (launchers and logs).
@@ -29,7 +29,6 @@ $stateDir = Join-Path $env:LOCALAPPDATA 'codex-overload-fix'
 $runKey   = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $runName  = 'CodexOverloadRelay'
 
-# ---------------------------------------------------------------- autostart
 try {
     $existing = Get-ItemProperty -Path $runKey -Name $runName -ErrorAction Stop
     if ($existing) {
@@ -40,7 +39,6 @@ try {
     Write-Step 'no autostart entry found'
 }
 
-# ---------------------------------------------------------------- processes
 $killed = 0
 Get-CimInstance Win32_Process -Filter "Name = 'wscript.exe'" -ErrorAction SilentlyContinue |
     Where-Object { $_.CommandLine -and $_.CommandLine -like '*watch-relay.vbs*' } |
@@ -62,7 +60,6 @@ if ($killed -gt 0) {
     Write-Step 'nothing was running'
 }
 
-# ---------------------------------------------------------------- purge
 if ($Purge) {
     if (Test-Path $stateDir) {
         Remove-Item -Recurse -Force $stateDir
@@ -71,16 +68,12 @@ if ($Purge) {
 }
 
 Write-Host ""
-Write-Host "Now remove these lines from $env:USERPROFILE\.codex\config.toml:" -ForegroundColor Yellow
-Write-Host "----------------------------------------" -ForegroundColor DarkGray
-Write-Host 'model_provider = "openai-retry"' -ForegroundColor White
-Write-Host '' -ForegroundColor White
-Write-Host '[model_providers.openai-retry]' -ForegroundColor White
-Write-Host 'name = "OpenAI (retry)"' -ForegroundColor White
-Write-Host 'base_url = "http://127.0.0.1:8787"' -ForegroundColor White
-Write-Host 'wire_api = "responses"' -ForegroundColor White
-Write-Host 'requires_openai_auth = true' -ForegroundColor White
-Write-Host 'stream_max_retries = 20' -ForegroundColor White
-Write-Host 'request_max_retries = 10' -ForegroundColor White
-Write-Host "----------------------------------------" -ForegroundColor DarkGray
+Write-Host "Now edit $env:USERPROFILE\.codex\config.toml:" -ForegroundColor Yellow
+Write-Host "  1. set  model_provider  back to the provider you used before"
+Write-Host "     (direct mode: the default; gateway mode: your gateway's own provider,"
+Write-Host "      cockpit-tools users usually `"codex_local_access`")"
+Write-Host "  2. delete the [model_providers.openai-retry] or"
+Write-Host "     [model_providers.gateway-retry] block the installer added"
+Write-Host ""
+Write-Host "Check what is selected now:  python tools\relayctl.py path" -ForegroundColor DarkGray
 Write-Host ""

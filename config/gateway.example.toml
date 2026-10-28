@@ -1,0 +1,59 @@
+# ---------------------------------------------------------------------------
+# GATEWAY MODE - for Codex behind an account-pool gateway (sub2api,
+# cockpit-tools, or any OpenAI-compatible /v1 endpoint backed by pooled
+# subscription accounts).
+#
+# Topology:
+#   Codex -> relay (127.0.0.1:8788) -> gateway (e.g. http://127.0.0.1:8888)
+#         -> pooled Codex subscription accounts -> upstream
+#
+# The relay adds exactly one thing: it retries the "at capacity" rejection
+# the gateway surfaces but cannot retry for you. Account rotation, session
+# affinity, quota pooling and image generation stay with the gateway.
+#
+# Start the relay with:
+#   python relay/relay.py --mode gateway --port 8788 \
+#       --upstream http://127.0.0.1:8888
+#   (or use scripts/install-*.sh / install.ps1 -Mode Gateway)
+#
+# Back up your config first, then restart Codex completely.
+# ---------------------------------------------------------------------------
+
+model_provider = "gateway-retry"
+
+[model_providers.gateway-retry]
+name = "Gateway (retry)"
+base_url = "http://127.0.0.1:8788/v1"
+wire_api = "responses"
+
+# Codex reads the gateway API key from this environment variable at runtime.
+# The relay never stores or inspects the key - it forwards the Authorization
+# header byte-for-byte. Export it in your shell profile:
+#   export SUB2API_API_KEY="sk-...your-gateway-key..."     (macOS/Linux)
+#   [Environment]::SetEnvironmentVariable('SUB2API_API_KEY','sk-...','User')  (Windows)
+env_key = "SUB2API_API_KEY"
+
+# The relay does the real retrying; these just stop Codex from giving up early
+# on the outer stream.
+stream_max_retries = 20
+request_max_retries = 10
+
+# ---------------------------------------------------------------------------
+# cockpit-tools users: if your existing [model_providers.codex_local_access]
+# block carries an experimental_bearer_token / http_headers pair, you can
+# paste those two lines here instead of env_key - account rotation and
+# session affinity then keep working unchanged.
+#
+# Notes
+#
+# * To roll back, delete `model_provider` and the [model_providers.gateway-retry]
+#   block, and point Codex back at the gateway directly.
+#
+# * The relay normalises a trailing /v1 in --upstream, so
+#   --upstream http://127.0.0.1:8888/v1 and --upstream http://127.0.0.1:8888
+#   behave identically (no /v1/v1/responses 404).
+#
+# * If the gateway is remote (https://gw.company.com), pass that as --upstream;
+#   consider --max-concurrent and --retries-per-sec when many employees share
+#   one gateway so the retry layer cannot stampede the shared account pool.
+# ---------------------------------------------------------------------------

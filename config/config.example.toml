@@ -1,5 +1,7 @@
 # ---------------------------------------------------------------------------
-# Codex overload fix - the only lines you need to add to ~/.codex/config.toml
+# DIRECT MODE - the only lines you need to add to ~/.codex/config.toml
+# (Codex -> relay -> chatgpt.com, your own account)
+# For the gateway variant (sub2api / cockpit-tools) see gateway.example.toml.
 #
 # Back up your config first:
 #   copy %USERPROFILE%\.codex\config.toml %USERPROFILE%\.codex\config.toml.bak

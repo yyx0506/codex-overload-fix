@@ -1,0 +1,61 @@
+name: Tests
+
+on:
+  push:
+    paths:
+      - 'relay/**'
+      - 'tests/**'
+      - 'tools/**'
+      - '.github/workflows/tests.yml'
+  pull_request:
+    paths:
+      - 'relay/**'
+      - 'tests/**'
+      - 'tools/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  suite:
+    name: relay test suite (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # The relay and the suite are pure stdlib Python, so the same tests
+        # double as the cross-platform claim: Linux, macOS (Intel and Apple
+        # Silicon runners) and Windows all run them unchanged.
+        os: [ubuntu-latest, macos-latest, macos-13, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pick a Python
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            py -3 -c "import sys; print(sys.executable)" || python -c "import sys; print(sys.executable)"
+          else
+            python3 -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)" \
+              || { echo 'Python 3.9+ required'; exit 1; }
+          fi
+
+      - name: Unit + end-to-end tests
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            py -3 tests/run_tests.py 2>/dev/null || python tests/run_tests.py
+          else
+            python3 tests/run_tests.py
+          fi
+
+      - name: relayctl --help still parses (argparse smoke test)
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            py -3 tools/relayctl.py --help >/dev/null 2>/dev/null || python tools/relayctl.py --help >/dev/null
+          else
+            python3 tools/relayctl.py --help >/dev/null
+          fi

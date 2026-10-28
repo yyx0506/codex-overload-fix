@@ -51,7 +51,9 @@ fi
 cat <<'EOF'
 
 The relay is stopped and will not start at login again.
-To finish, delete the `model_provider = "openai-retry"` line (and the
-[model_providers.openai-retry] block) from ~/.codex/config.toml, then restart
-Codex. That returns it to a direct connection.
+To finish, delete the `model_provider = "openai-retry"` (direct mode) or
+`model_provider = "gateway-retry"` (gateway mode) line — and the matching
+[model_providers.*] block — from ~/.codex/config.toml, then restart Codex.
+Direct mode then goes straight to chatgpt.com; gateway mode should point its
+base_url back at the gateway itself.
 EOF

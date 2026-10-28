@@ -1,29 +1,47 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Install the Codex overload relay as a hidden, auto-restarting background service.
+    Install the Codex overload relay (universal edition) as a hidden,
+    auto-restarting background process.
 
 .DESCRIPTION
-    Finds Python, generates hidden launchers, registers a watchdog in HKCU\...\Run
-    (no admin rights required) and prints the config.toml snippet you need to paste.
+    Finds Python, writes hidden VBS launchers into %LOCALAPPDATA%\codex-overload-fix,
+    registers a watchdog under HKCU\...\Run (no admin rights), then prints the
+    exact config.toml block for the mode you chose.
+
+    -Mode Direct   (default) the original layout: relay in front of chatgpt.com.
+    -Mode Gateway  relay in front of an account-pool gateway (sub2api,
+                   cockpit-tools, ...). -GatewayUrl is required, e.g.
+                   http://127.0.0.1:8888 or https://sub2api.company.com.
+                   A trailing /v1 is fine - the relay normalises it.
+
+.PARAMETER Mode
+    Direct or Gateway (default Direct).
+
+.PARAMETER GatewayUrl
+    The gateway's base URL. Required for -Mode Gateway.
+
+.PARAMETER ApiKeyEnv
+    Name of the env var Codex reads the gateway API key from
+    (Gateway mode only, default SUB2API_API_KEY). The key itself is never
+    stored by the installer.
 
 .PARAMETER Port
-    Local port for the relay. Default 8787.
-
-.PARAMETER Proxy
-    Upstream proxy, e.g. http://127.0.0.1:7897. Omit if your system proxy already
-    covers chatgpt.com.
-
-.PARAMETER NoAutostart
-    Generate the launchers but do not register the watchdog to start at login.
+    Local port for the relay. Default 8788 in Gateway mode, 8787 in Direct.
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Proxy http://127.0.0.1:7897
+    powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+
+.EXAMPLE
+    powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Mode Gateway -GatewayUrl http://127.0.0.1:8888
 #>
 [CmdletBinding()]
 param(
-    [int]$Port = 8787,
-    [string]$Proxy = "",
+    [ValidateSet('Direct','Gateway')][string]$Mode = 'Direct',
+    [string]$GatewayUrl = '',
+    [string]$ApiKeyEnv = 'SUB2API_API_KEY',
+    [int]$Port = 0,
+    [string]$Proxy = '',
     [switch]$NoAutostart
 )
 
@@ -33,24 +51,61 @@ function Write-Step($msg) { Write-Host "  $msg" -ForegroundColor DarkGray }
 function Write-Ok($msg)   { Write-Host "  [ok] $msg" -ForegroundColor Green }
 function Write-Warn2($msg){ Write-Host "  [!!] $msg" -ForegroundColor Yellow }
 
+if ($Port -eq 0) { $Port = if ($Mode -eq 'Gateway') { 8788 } else { 8787 } }
+
 Write-Host ""
-Write-Host "Codex Overload Fix - installer" -ForegroundColor Cyan
-Write-Host "-----------------------------" -ForegroundColor DarkGray
+Write-Host "Codex Overload Fix - universal edition - installer" -ForegroundColor Cyan
+Write-Host "--------------------------------------------------" -ForegroundColor DarkGray
+
+if ($Mode -eq 'Gateway') {
+    if (-not $GatewayUrl) {
+        throw "-Mode Gateway requires -GatewayUrl, e.g. -GatewayUrl http://127.0.0.1:8888"
+    }
+    if ($GatewayUrl -notmatch '^https?://') {
+        $GatewayUrl = "http://$GatewayUrl"
+    }
+    Write-Step "mode: gateway - relay in front of $GatewayUrl"
+    # Refuse to sit on the gateway's own port.
+    if ($GatewayUrl -match '^https?://[^/]+:(\d+)') {
+        $gport = [int]$Matches[1]
+        if ($gport -eq $Port) {
+            throw "the relay port equals the gateway port ($Port); pass -Port <other port>"
+        }
+    }
+} else {
+    Write-Step 'mode: direct - relay in front of chatgpt.com (original layout)'
+}
 
 # ---------------------------------------------------------------- locations
-$root      = Split-Path -Parent $PSScriptRoot
-$relayPy   = Join-Path $root 'relay\relay.py'
-$stateDir  = Join-Path $env:LOCALAPPDATA 'codex-overload-fix'
-$logPath   = Join-Path $stateDir 'relay.log'
-$startVbs  = Join-Path $stateDir 'start-relay.vbs'
-$watchVbs  = Join-Path $stateDir 'watch-relay.vbs'
-$runKey    = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
-$runName   = 'CodexOverloadRelay'
+$root     = Split-Path -Parent $PSScriptRoot
+$relayPy  = Join-Path $root 'relay\relay.py'
+$stateDir = Join-Path $env:LOCALAPPDATA 'codex-overload-fix'
+$logPath  = Join-Path $stateDir 'relay.log'
+$startVbs = Join-Path $stateDir 'start-relay.vbs'
+$watchVbs = Join-Path $stateDir 'watch-relay.vbs'
+$runKey   = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+$runName  = 'CodexOverloadRelay'
 
 if (-not (Test-Path $relayPy)) {
     throw "relay.py not found at $relayPy - run this from the repository's scripts\ folder."
 }
 New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
+
+# ---------------------------------------------------------------- port clash
+function Test-PortBusy([int]$p) {
+    try {
+        return [bool](Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction Stop)
+    } catch {
+        return [bool](netstat -ano | Select-String ":$p\s" | Select-String 'LISTENING')
+    }
+}
+if (Test-PortBusy $Port) {
+    $owner = (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+              Select-Object -First 1).OwningProcess
+    $name = if ($owner) { (Get-Process -Id $owner -ErrorAction SilentlyContinue).ProcessName } else { 'unknown' }
+    Write-Warn2 "port $Port is already in use by '$name'"
+    Write-Warn2 "pass -Port <free port> and use the same port in the config snippet"
+}
 
 # ---------------------------------------------------------------- find python
 Write-Step 'Looking for Python...'
@@ -65,7 +120,7 @@ foreach ($candidate in @('py -3', 'python', 'python3')) {
     if (-not $out) { continue }
     $path = ($out | Select-Object -First 1).Trim()
     if (-not $path -or -not (Test-Path $path)) { continue }
-    if ($path -match 'WindowsApps') { continue }   # Store stub
+    if ($path -match 'WindowsApps') { continue }
     $ver = & $path -c "import sys;print('%d.%d'%sys.version_info[:2])" 2>$null
     if (-not $ver) { continue }
     $major, $minor = $ver.Trim().Split('.')
@@ -83,18 +138,25 @@ if (-not $python) {
 
 # ---------------------------------------------------------------- build command
 $argList = @(
+    "--mode $Mode",
     "--port $Port",
     "--log `"$logPath`"",
     '--max-attempts 30',
+    '--max-conn-attempts 3',
+    '--conn-budget 15',
     '--backoff-base 1',
     '--backoff-max 8',
     '--total-budget 300',
-    '--commit-deadline 120'
+    '--commit-deadline 120',
+    '--max-concurrent 4',
+    '--retries-per-sec 2'
 )
-if ($Proxy) { $argList += "--proxy $Proxy" }
+if ($Mode -eq 'Gateway') {
+    $argList += "--upstream `"$GatewayUrl`""
+    $argList += '--cooling-latency 0.2'
+}
+if ($Proxy)   { $argList += "--proxy $Proxy" }
 $innerCmd = '"' + $python + '" "' + $relayPy + '" ' + ($argList -join ' ')
-
-# VBS strings escape a double quote by doubling it.
 $vbsCmd = $innerCmd.Replace('"', '""')
 
 # ---------------------------------------------------------------- launcher
@@ -140,14 +202,7 @@ if (-not $NoAutostart) {
 Write-Step 'Starting the relay...'
 Start-Process -FilePath 'wscript.exe' -ArgumentList ('"' + $watchVbs + '"') -WindowStyle Hidden
 Start-Sleep -Seconds 4
-
-$listening = $false
-try {
-    $listening = [bool](Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction Stop)
-} catch {
-    $listening = [bool](netstat -ano | Select-String ":$Port\s" | Select-String 'LISTENING')
-}
-if ($listening) {
+if (Test-PortBusy $Port) {
     Write-Ok "listening on 127.0.0.1:$Port"
 } else {
     Write-Warn2 "not listening yet - check $logPath"
@@ -158,7 +213,50 @@ $configPath = Join-Path $env:USERPROFILE '.codex\config.toml'
 Write-Host ""
 Write-Host "Add this to $configPath" -ForegroundColor Cyan
 Write-Host "----------------------------------------" -ForegroundColor DarkGray
-$snippet = @"
+
+if ($Mode -eq 'Gateway') {
+    # If a cockpit-tools provider block already exists, its bearer token and
+    # headers can be carried over so account rotation and session affinity
+    # keep working unchanged.
+    $existing = $null
+    if (Test-Path $configPath) {
+        $text = Get-Content -Raw -Path $configPath
+        $m = [regex]::Match($text,
+            '(?ms)^\[model_providers\.codex_local_access\](.*?)(?=^\[|\Z)')
+        if ($m.Success) { $existing = $m.Groups[1].Value }
+    }
+    $snippet = @"
+model_provider = "gateway-retry"
+
+[model_providers.gateway-retry]
+name = "Gateway (retry)"
+base_url = "http://127.0.0.1:$Port/v1"
+wire_api = "responses"
+env_key = "$ApiKeyEnv"
+stream_max_retries = 20
+request_max_retries = 10
+"@
+    if ($existing) {
+        $carry = @()
+        foreach ($line in ($existing -split "`n")) {
+            $t = $line.Trim()
+            if ($t -match '^(experimental_bearer_token|http_headers)\s*=') { $carry += $t }
+        }
+        if ($carry.Count -gt 0) {
+            # An explicit token overrides the env var, so drop env_key.
+            $snippet = $snippet -replace "(?m)^env_key = .*\r?\n?", ""
+            $snippet += "`n" + ($carry -join "`n")
+            Write-Step "carried the token/headers over from [model_providers.codex_local_access]"
+        }
+    }
+    Write-Host $snippet -ForegroundColor White
+    Write-Host "----------------------------------------" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "The installer never stores your key. Put it in the environment" -ForegroundColor Yellow
+    Write-Host "so Codex can read it, then restart the terminal and Codex:"         -ForegroundColor Yellow
+    Write-Host "  [Environment]::SetEnvironmentVariable('$ApiKeyEnv','sk-...','User')" -ForegroundColor White
+} else {
+    $snippet = @"
 model_provider = "openai-retry"
 
 [model_providers.openai-retry]
@@ -169,11 +267,17 @@ requires_openai_auth = true
 stream_max_retries = 20
 request_max_retries = 10
 "@
-Write-Host $snippet -ForegroundColor White
-Write-Host "----------------------------------------" -ForegroundColor DarkGray
+    Write-Host $snippet -ForegroundColor White
+    Write-Host "----------------------------------------" -ForegroundColor DarkGray
+}
+
 Write-Host ""
 Write-Host "Keep a backup of config.toml before editing." -ForegroundColor Yellow
-Write-Host "Then fully restart Codex." -ForegroundColor Yellow
+Write-Host "Then fully quit and restart Codex (tray icon -> Quit, not just close)." -ForegroundColor Yellow
+Write-Host ""
+Write-Host "Verify the relay is actually in the path:" -ForegroundColor Cyan
+Write-Host "  python tools\relayctl.py path" -ForegroundColor White
+Write-Host "  python tools\relayctl.py status" -ForegroundColor White
 Write-Host ""
 Write-Host "Log:     $logPath" -ForegroundColor DarkGray
 Write-Host "Stop:    powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1" -ForegroundColor DarkGray

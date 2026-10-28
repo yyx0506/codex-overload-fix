@@ -11,7 +11,10 @@
 # stopped when the last session of that user ends unless lingering is enabled.
 set -euo pipefail
 
-PORT=8787
+PORT=""
+MODE="direct"
+UPSTREAM=""
+API_KEY_ENV="SUB2API_API_KEY"
 PROXY=""
 PYTHON_PATH=""
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/codex-overload-fix"
@@ -31,19 +34,31 @@ usage() {
     cat <<'EOF'
 usage: install-linux.sh [options]
 
-  --port PORT         Local port for the relay (default 8787)
-  --proxy URL         Upstream proxy, e.g. http://127.0.0.1:7890
-  --python-path PATH  Use this interpreter instead of the first python3 on PATH
-  --state-dir DIR     Where the log lives
-  --linger            Enable lingering so the relay survives logout
-  --no-autostart      Write the unit but do not start or enable it
-  --dry-run           Print the unit and the commands; change nothing
-  -h, --help          This message
+  --mode direct|gateway  direct: relay in front of chatgpt.com, your own
+                         account (default). gateway: relay in front of an
+                         account-pool gateway (sub2api, cockpit-tools, ...);
+                         requires --upstream
+  --upstream URL         gateway address, e.g. http://127.0.0.1:8888 or
+                         https://sub2api.company.com; a trailing /v1 is fine
+  --api-key-env NAME     env var Codex reads the gateway API key from
+                         (gateway mode only, default SUB2API_API_KEY)
+  --port PORT            Local port for the relay (default 8787 direct /
+                         8788 gateway)
+  --proxy URL            Upstream proxy, e.g. http://127.0.0.1:7890
+  --python-path PATH     Use this interpreter instead of the first python3 on PATH
+  --state-dir DIR        Where the log lives
+  --linger               Enable lingering so the relay survives logout
+  --no-autostart         Write the unit but do not start or enable it
+  --dry-run              Print the unit and the commands; change nothing
+  -h, --help             This message
 EOF
 }
 
 while [ $# -gt 0 ]; do
     case "$1" in
+        --mode)         [ $# -ge 2 ] || die "--mode needs a value";         MODE="$2"; shift 2 ;;
+        --upstream)     [ $# -ge 2 ] || die "--upstream needs a value";     UPSTREAM="$2"; shift 2 ;;
+        --api-key-env)  [ $# -ge 2 ] || die "--api-key-env needs a value";  API_KEY_ENV="$2"; shift 2 ;;
         --port)         [ $# -ge 2 ] || die "--port needs a value";         PORT="$2"; shift 2 ;;
         --proxy)        [ $# -ge 2 ] || die "--proxy needs a value";        PROXY="$2"; shift 2 ;;
         --python-path)  [ $# -ge 2 ] || die "--python-path needs a value";  PYTHON_PATH="$2"; shift 2 ;;
@@ -55,6 +70,15 @@ while [ $# -gt 0 ]; do
         *)              die "unknown option: $1 (try --help)" ;;
     esac
 done
+
+case "$MODE" in
+    direct|gateway) ;;
+    *) die "--mode must be 'direct' or 'gateway', got: $MODE" ;;
+esac
+if [ "$MODE" = "gateway" ] && [ -z "$UPSTREAM" ]; then
+    die "--mode gateway needs --upstream, e.g. --upstream http://127.0.0.1:8888"
+fi
+[ -n "$PORT" ] || { [ "$MODE" = "gateway" ] && PORT=8788 || PORT=8787; }
 
 case "$PORT" in
     ''|*[!0-9]*) die "port must be a number: $PORT" ;;
@@ -91,9 +115,12 @@ PY
 # The argv systemd will run. Kept in one place so --dry-run, the written unit
 # and CI all exercise exactly the same command line.
 relay_argv() {
-    ARGV=("$PYTHON_PATH" "$RELAY" --port "$PORT" --log "$LOG_PATH"
+    ARGV=("$PYTHON_PATH" "$RELAY" --mode "$MODE" --port "$PORT" --log "$LOG_PATH"
           --max-attempts 30 --backoff-base 1 --backoff-max 8
           --total-budget 300 --commit-deadline 120)
+    if [ -n "$UPSTREAM" ]; then
+        ARGV+=(--upstream "$UPSTREAM")
+    fi
     if [ -n "$PROXY" ]; then
         ARGV+=(--proxy "$PROXY")
     fi
@@ -141,6 +168,8 @@ EOF
 
 # ---------------------------------------------------------------- dry run
 if [ "$DRY_RUN" -eq 1 ]; then
+    say "mode:      $MODE"
+    [ -n "$UPSTREAM" ] && say "upstream:  $UPSTREAM"
     say "port:      $PORT"
     say "relay:     $RELAY"
     say "log:       $LOG_PATH"
@@ -227,7 +256,37 @@ else
     runtime_hint="Start:   $(quote_argv)"
 fi
 
-cat <<EOF
+if [ "$MODE" = "gateway" ]; then
+    cat <<EOF
+
+Add this to ~/.codex/config.toml, then restart Codex:
+
+model_provider = "gateway-retry"
+
+[model_providers.gateway-retry]
+name = "Gateway (retry)"
+base_url = "http://127.0.0.1:$PORT/v1"
+wire_api = "responses"
+env_key = "$API_KEY_ENV"
+stream_max_retries = 20
+request_max_retries = 10
+
+The key itself is NOT stored anywhere by the installer: export it in your
+shell profile so Codex can read it,
+
+    export $API_KEY_ENV="sk-...your-gateway-key..."
+
+Keep a backup of config.toml before editing.
+
+Log:     $LOG_PATH
+$runtime_hint
+Stop:    bash scripts/uninstall-linux.sh
+
+If you move or delete this folder, re-run the installer; systemd points at the
+absolute path of relay/relay.py.
+EOF
+else
+    cat <<EOF
 
 Add this to ~/.codex/config.toml, then restart Codex:
 
@@ -250,3 +309,4 @@ Stop:    bash scripts/uninstall-linux.sh
 If you move or delete this folder, re-run the installer; systemd points at the
 absolute path of relay/relay.py.
 EOF
+fi
