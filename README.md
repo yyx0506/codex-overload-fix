@@ -62,6 +62,34 @@ Pure Python 3.9+ standard library. No dependencies, no admin rights, nothing
 compiled — which is also why the same code runs on Windows, macOS (M-series
 and Intel) and Linux.
 
+### For non-technical users: one double-click, no config editing
+
+Nobody has to edit `config.toml` by hand. The `scripts/` folder ships
+double-click installers that do everything — install the relay, **write the
+config automatically** (with a backup and one-command restore) — and ask at
+most one question (the gateway API key, gateway mode only):
+
+| File | Mode | What the user does |
+|---|---|---|
+| `quick-install-direct.bat` / `.command` | direct | double-click, restart Codex |
+| `quick-install-gateway.bat` / `.command` | gateway | double-click, paste the API key when asked, restart Codex |
+
+**For whoever distributes this** (e.g. to a company): open the gateway
+quick-installer once and set `GATEWAY_URL` at the top to the company gateway
+before sending the zip out; then colleagues just double-click and paste their
+key. On macOS, if Gatekeeper complains about a downloaded file: right-click →
+Open → Open. Central-relay deployments can also pass `--base-url` /
+`--config`-level overrides — see `tools/configure_codex.py --help`.
+
+Everything the installers change is reversible:
+
+```
+bash scripts/uninstall-mac.sh                      # stops the relay (or uninstall.ps1 / uninstall-linux.sh)
+python tools/configure_codex.py --restore          # restores config.toml from the pre-install backup
+```
+
+### Standard installers
+
 <details open>
 <summary><b>Windows</b></summary>
 
@@ -71,6 +99,9 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 
 # Gateway mode (sub2api / cockpit-tools / any gateway):
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Mode Gateway -GatewayUrl http://127.0.0.1:8888
+
+# Add -WriteConfig to let the installer edit config.toml for you
+# (backs it up first; prompts for the gateway key in gateway mode).
 ```
 
 The installer finds Python, refuses taken ports, writes a hidden launcher +
@@ -88,6 +119,8 @@ bash scripts/install-mac.sh
 
 # Gateway mode (sub2api / cockpit-tools / any gateway):
 bash scripts/install-mac.sh --mode gateway --upstream http://127.0.0.1:8888
+
+# Add --write-config to let the installer edit config.toml for you.
 ```
 
 Registers a per-user LaunchAgent (`launchd` restarts it; no watchdog needed).
@@ -106,10 +139,11 @@ bash scripts/install-linux.sh --mode gateway --upstream http://127.0.0.1:8888
 Registers a systemd `--user` service. Uninstall: `scripts/uninstall-linux.sh`.
 </details>
 
-Then paste the printed block into `~/.codex/config.toml` (or use
+Without `--write-config`, the installers print the block to paste into
+`~/.codex/config.toml` yourself (templates:
 [config/config.example.toml](config/config.example.toml) /
-[config/gateway.example.toml](config/gateway.example.toml)) and fully restart
-Codex.
+[config/gateway.example.toml](config/gateway.example.toml)). Either way, fully
+restart Codex afterwards.
 
 ### The two config.toml blocks
 
@@ -204,9 +238,10 @@ account switches can silently bypass a perfectly healthy relay.
 ### Tests
 
 ```
-python tests/run_tests.py        # 49 assertions: absorption, the no-duplicate
+python tests/run_tests.py        # 64 assertions: absorption, the no-duplicate
                                  # boundary, image commits, JSON handling, cooling,
-                                 # give-up shape, dead-upstream fast fail, modes
+                                 # give-up shape, dead-upstream fast fail, modes,
+                                 # and the config.toml writer/backup/restore
 ```
 
 CI runs the suite on Ubuntu, macOS (Intel + ARM runners) and Windows:

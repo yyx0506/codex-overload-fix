@@ -35,7 +35,7 @@ improvements to the cockpit edition (see ACKNOWLEDGEMENTS.md). When asked
 python tests/run_tests.py
 ```
 
-49 assertions, no third-party deps. CI runs it on Ubuntu, macOS (Intel + ARM)
+64 assertions, no third-party deps. CI runs it on Ubuntu, macOS (Intel + ARM)
 and Windows (`.github/workflows/tests.yml`). A platform claim without a green
 run on that platform is a guess.
 

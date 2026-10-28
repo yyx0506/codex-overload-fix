@@ -59,3 +59,15 @@ jobs:
           else
             python3 tools/relayctl.py --help >/dev/null
           fi
+
+      - name: PowerShell installers parse (Windows only)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          foreach ($f in 'scripts/install.ps1','scripts/uninstall.ps1') {
+            $errs = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Join-Path $PWD $f), [ref]$null, [ref]$errs) | Out-Null
+            if ($errs) { Write-Error "$f : $($errs[0].Message)"; exit 1 }
+            Write-Host "parse ok: $f"
+          }

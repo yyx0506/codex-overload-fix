@@ -15,6 +15,8 @@ PORT=""
 MODE="direct"
 UPSTREAM=""
 API_KEY_ENV="SUB2API_API_KEY"
+API_KEY=""
+WRITE_CONFIG=0
 PROXY=""
 PYTHON_PATH=""
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/codex-overload-fix"
@@ -42,6 +44,10 @@ usage: install-linux.sh [options]
                          https://sub2api.company.com; a trailing /v1 is fine
   --api-key-env NAME     env var Codex reads the gateway API key from
                          (gateway mode only, default SUB2API_API_KEY)
+  --api-key KEY          gateway API key; with --write-config it is written
+                         into config.toml for the user (non-technical path)
+  --write-config         edit ~/.codex/config.toml automatically (backs it up
+                         first; tools/configure_codex.py --restore undoes it)
   --port PORT            Local port for the relay (default 8787 direct /
                          8788 gateway)
   --proxy URL            Upstream proxy, e.g. http://127.0.0.1:7890
@@ -59,6 +65,8 @@ while [ $# -gt 0 ]; do
         --mode)         [ $# -ge 2 ] || die "--mode needs a value";         MODE="$2"; shift 2 ;;
         --upstream)     [ $# -ge 2 ] || die "--upstream needs a value";     UPSTREAM="$2"; shift 2 ;;
         --api-key-env)  [ $# -ge 2 ] || die "--api-key-env needs a value";  API_KEY_ENV="$2"; shift 2 ;;
+        --api-key)      [ $# -ge 2 ] || die "--api-key needs a value";      API_KEY="$2"; shift 2 ;;
+        --write-config) WRITE_CONFIG=1; shift ;;
         --port)         [ $# -ge 2 ] || die "--port needs a value";         PORT="$2"; shift 2 ;;
         --proxy)        [ $# -ge 2 ] || die "--proxy needs a value";        PROXY="$2"; shift 2 ;;
         --python-path)  [ $# -ge 2 ] || die "--python-path needs a value";  PYTHON_PATH="$2"; shift 2 ;;
@@ -256,7 +264,34 @@ else
     runtime_hint="Start:   $(quote_argv)"
 fi
 
-if [ "$MODE" = "gateway" ]; then
+CONFIGURE="$ROOT/tools/configure_codex.py"
+CODEX_CONFIG="$HOME/.codex/config.toml"
+
+if [ "$WRITE_CONFIG" -eq 1 ]; then
+    if [ "$MODE" = "gateway" ] && [ -z "$API_KEY" ] && [ -t 0 ]; then
+        printf 'Gateway API key (paste, or Enter to skip and use %s later): ' "$API_KEY_ENV"
+        read -r API_KEY
+    fi
+    CFG_ARGS=(--config "$CODEX_CONFIG" --mode "$MODE" --port "$PORT")
+    [ -n "$API_KEY" ] && CFG_ARGS+=(--api-key "$API_KEY")
+    ok "editing $CODEX_CONFIG (backup kept alongside)"
+    "$PYTHON_PATH" "$CONFIGURE" "${CFG_ARGS[@]}" || die "config write failed; edit $CODEX_CONFIG by hand (see the snippet below)"
+    cat <<EOF
+
+All done. Fully quit and restart Codex.
+Everything the installer changed is reversible:
+
+    relay:     bash scripts/uninstall-linux.sh
+    config:    "$PYTHON_PATH" tools/configure_codex.py --restore
+
+Verify the relay is actually in the path:
+
+    "$PYTHON_PATH" tools/relayctl.py path
+
+Log:     $LOG_PATH
+$runtime_hint
+EOF
+elif [ "$MODE" = "gateway" ]; then
     cat <<EOF
 
 Add this to ~/.codex/config.toml, then restart Codex:
@@ -275,6 +310,9 @@ The key itself is NOT stored anywhere by the installer: export it in your
 shell profile so Codex can read it,
 
     export $API_KEY_ENV="sk-...your-gateway-key..."
+
+Tip: for non-technical users, re-run with --write-config (and optionally
+--api-key) and the installer edits config.toml itself, with a backup.
 
 Keep a backup of config.toml before editing.
 
@@ -299,6 +337,9 @@ wire_api = "responses"
 requires_openai_auth = true
 stream_max_retries = 20
 request_max_retries = 10
+
+Tip: re-run with --write-config and the installer edits config.toml itself
+(backup kept, tools/configure_codex.py --restore undoes it).
 
 Keep a backup of config.toml before editing.
 

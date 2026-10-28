@@ -68,7 +68,10 @@ if ($Purge) {
 }
 
 Write-Host ""
-Write-Host "Now edit $env:USERPROFILE\.codex\config.toml:" -ForegroundColor Yellow
+Write-Host "If the installer was run with -WriteConfig, also restore the config:" -ForegroundColor Yellow
+Write-Host "  python tools\configure_codex.py --restore" -ForegroundColor White
+Write-Host ""
+Write-Host "Otherwise edit $env:USERPROFILE\.codex\config.toml yourself:" -ForegroundColor Yellow
 Write-Host "  1. set  model_provider  back to the provider you used before"
 Write-Host "     (direct mode: the default; gateway mode: your gateway's own provider,"
 Write-Host "      cockpit-tools users usually `"codex_local_access`")"

@@ -26,6 +26,16 @@
     (Gateway mode only, default SUB2API_API_KEY). The key itself is never
     stored by the installer.
 
+.PARAMETER WriteConfig
+    Edit %USERPROFILE%\.codex\config.toml automatically (backs it up first to
+    config.toml.bak-codex-overload-fix). For non-technical users. Undo:
+    python tools\configure_codex.py --restore
+
+.PARAMETER ApiKey
+    Gateway API key; with -WriteConfig it is written into config.toml for the
+    user. If omitted in Gateway mode you are prompted (safe on the target
+    machine; it does not end up in shell history).
+
 .PARAMETER Port
     Local port for the relay. Default 8788 in Gateway mode, 8787 in Direct.
 
@@ -33,13 +43,15 @@
     powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Mode Gateway -GatewayUrl http://127.0.0.1:8888
+    powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Mode Gateway -GatewayUrl http://127.0.0.1:8888 -WriteConfig
 #>
 [CmdletBinding()]
 param(
     [ValidateSet('Direct','Gateway')][string]$Mode = 'Direct',
     [string]$GatewayUrl = '',
     [string]$ApiKeyEnv = 'SUB2API_API_KEY',
+    [string]$ApiKey = '',
+    [switch]$WriteConfig,
     [int]$Port = 0,
     [string]$Proxy = '',
     [switch]$NoAutostart
@@ -210,6 +222,30 @@ if (Test-PortBusy $Port) {
 
 # ---------------------------------------------------------------- config
 $configPath = Join-Path $env:USERPROFILE '.codex\config.toml'
+$configurePy = Join-Path $root 'tools\configure_codex.py'
+
+if ($WriteConfig) {
+    if ($Mode -eq 'Gateway' -and -not $ApiKey) {
+        $ApiKey = Read-Host 'Gateway API key (paste, or Enter to skip and configure later)'
+    }
+    $cfgArgs = @('--config', $configPath, '--mode', $Mode.ToLower(), '--port', "$Port")
+    if ($ApiKey) { $cfgArgs += @('--api-key', $ApiKey) }
+    Write-Ok "editing $configPath (backup kept alongside)"
+    & $python $configurePy @cfgArgs
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host ""
+        Write-Host "All done. Fully quit and restart Codex (tray icon -> Quit, not just close)." -ForegroundColor Yellow
+        Write-Host "Everything the installer changed is reversible:" -ForegroundColor Cyan
+        Write-Host "  relay:     powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1"
+        Write-Host "  config:    python tools\configure_codex.py --restore"
+        Write-Host ""
+        Write-Host "Verify the relay is in the path:  python tools\relayctl.py path" -ForegroundColor DarkGray
+        Write-Host "Log:     $logPath" -ForegroundColor DarkGray
+        exit 0
+    }
+    Write-Warn2 "config write failed - paste the snippet below by hand"
+}
+
 Write-Host ""
 Write-Host "Add this to $configPath" -ForegroundColor Cyan
 Write-Host "----------------------------------------" -ForegroundColor DarkGray

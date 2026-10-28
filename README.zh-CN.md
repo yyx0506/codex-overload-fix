@@ -57,6 +57,32 @@
 纯 Python 3.9+ 标准库。零依赖、不需要管理员权限、没有编译产物 —— 这也是同一份代码
 能在 Windows、macOS（M 系列 / Intel）和 Linux 上跑的原因。
 
+### 非研发同事：双击安装，不用改任何配置
+
+**没有任何人需要手动编辑 `config.toml`**。`scripts/` 目录里自带双击安装脚本，
+装中继、**自动写入 config.toml**（自动备份、一条命令还原）全部代劳，
+最多只问一个问题（网关模式下问一次 API key）：
+
+| 文件 | 模式 | 同事要做的 |
+|---|---|---|
+| `quick-install-direct.bat` / `.command` | 直连 | 双击 → 重启 Codex，完成 |
+| `quick-install-gateway.bat` / `.command` | 网关 | 双击 → 提示时粘贴 API key → 重启 Codex |
+
+**发给团队之前**（比如公司内部下发）：打开网关版一键脚本，把顶部的
+`GATEWAY_URL` 改成公司网关地址，再把整个 zip 发出去；同事双击后只需粘贴自己的 key。
+macOS 如果提示「来自互联网」无法打开：右键文件 → 打开 → 打开。
+集中部署（中继放在服务器上）时可用 `tools/configure_codex.py --base-url ...` 指向
+公共中继地址。
+
+安装器做的所有改动都可逆：
+
+```
+bash scripts/uninstall-mac.sh                      # 停掉中继（Windows/Linux 对应 uninstall.ps1 / uninstall-linux.sh）
+python tools/configure_codex.py --restore          # 从安装前的备份还原 config.toml
+```
+
+### 标准安装器
+
 <details open>
 <summary><b>Windows</b></summary>
 
@@ -66,6 +92,9 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 
 # 网关模式（sub2api / cockpit-tools / 任意网关）：
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Mode Gateway -GatewayUrl http://127.0.0.1:8888
+
+# 加 -WriteConfig 让安装器代为修改 config.toml
+# （先备份；网关模式下会提示输入 key）
 ```
 
 安装脚本会找到 Python、拒绝占用中的端口、把隐藏启动器 + 看门狗写入
@@ -82,6 +111,8 @@ bash scripts/install-mac.sh
 
 # 网关模式（sub2api / cockpit-tools / 任意网关）：
 bash scripts/install-mac.sh --mode gateway --upstream http://127.0.0.1:8888
+
+# 加 --write-config 让安装器代为修改 config.toml
 ```
 
 注册为用户级 LaunchAgent（launchd 自动重启，无需看门狗）。中继是纯 Python，
@@ -100,9 +131,11 @@ bash scripts/install-linux.sh --mode gateway --upstream http://127.0.0.1:8888
 注册为 systemd `--user` 服务。卸载：`scripts/uninstall-linux.sh`。
 </details>
 
-然后把打印出来的片段粘进 `~/.codex/config.toml`（或参考
+不加 `--write-config` 时，安装器会把要粘贴的片段打印出来，由你自己改
+`~/.codex/config.toml`（模板见
 [config/config.example.toml](config/config.example.toml) /
-[config/gateway.example.toml](config/gateway.example.toml)），完全退出并重启 Codex。
+[config/gateway.example.toml](config/gateway.example.toml)）。
+无论哪种方式，改完都要完全退出并重启 Codex。
 
 ### 两种模式的 config.toml
 
@@ -187,8 +220,9 @@ python tools/relayctl.py probe                # 发一个极小请求，统计�
 ### 测试
 
 ```
-python tests/run_tests.py        # 49 项断言：吸收、不重复生成边界、图像提交、
-                                 # JSON 处理、冷却、放弃形态、上游失联快速失败、双模式
+python tests/run_tests.py        # 64 项断言：吸收、不重复生成边界、图像提交、
+                                 # JSON 处理、冷却、放弃形态、上游失联快速失败、
+                                 # 双模式、config.toml 写入/备份/还原
 ```
 
 CI 在 Ubuntu、macOS（Intel + ARM runner）和 Windows 上跑同一套测试：

@@ -77,7 +77,10 @@ fi
 cat <<'EOF'
 
 The relay is stopped and will not start at login again.
-To finish, delete the `model_provider = "openai-retry"` line (and the
-[model_providers.openai-retry] block) from ~/.codex/config.toml, then restart
-Codex. That returns it to a direct connection.
+If the installer was run with --write-config, also restore the config:
+
+    python3 tools/configure_codex.py --restore
+
+(or delete the model_provider line and the [model_providers.*retry*] block
+from ~/.codex/config.toml yourself, then restart Codex).
 EOF

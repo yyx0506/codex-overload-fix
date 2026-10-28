@@ -158,6 +158,83 @@ def unit_tests():
     check("official upstream", (s, prefix) == ("https", "/backend-api/codex"))
 
 
+# ------------------------------------------------------- config tool tests
+def config_tool_tests():
+    print("config tool (configure_codex)")
+    import importlib.util
+    import tempfile
+    spec = importlib.util.spec_from_file_location(
+        "configure_codex", os.path.join(ROOT, "tools", "configure_codex.py"))
+    cc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cc)
+
+    with tempfile.TemporaryDirectory() as td:
+        # fresh machine: no config at all
+        cfg = os.path.join(td, "config.toml")
+        cc.write_config(cfg, "direct", "http://127.0.0.1:8787")
+        text = open(cfg, encoding="utf-8").read()
+        check("fresh: model_provider set", 'model_provider = "openai-retry"' in text)
+        check("fresh: requires_openai_auth", "requires_openai_auth = true" in text)
+        check("fresh: no backup (nothing to back up)",
+              not os.path.exists(cfg + cc.BACKUP_SUFFIX))
+
+        # existing config with unrelated tables and a different provider
+        cfg2 = os.path.join(td, "existing.toml")
+        original = (
+            '# my config\nmodel = "gpt-5.6"\nmodel_provider = "other"\n\n'
+            '[model_providers.other]\nname = "other"\nbase_url = "http://x/v1"\n\n'
+            '[profiles.heavy]\nmodel_reasoning_effort = "high"\n'
+        )
+        with open(cfg2, "w", encoding="utf-8") as fh:
+            fh.write(original)
+        cc.write_config(cfg2, "gateway", "http://127.0.0.1:8788/v1", api_key="sk-1")
+        text = open(cfg2, encoding="utf-8").read()
+        check("existing: model_provider replaced", 'model_provider = "gateway-retry"' in text)
+        check("existing: unrelated tables intact",
+              "[profiles.heavy]" in text and "[model_providers.other]" in text)
+        check("existing: key written as static header",
+              'Authorization = "Bearer sk-1"' in text)
+        check("existing: backup created", os.path.exists(cfg2 + cc.BACKUP_SUFFIX))
+        with open(cfg2 + cc.BACKUP_SUFFIX, encoding="utf-8") as fh:
+            pristine = fh.read()
+        check("backup equals the original", pristine == original)
+
+        # idempotent re-run
+        cc.write_config(cfg2, "gateway", "http://127.0.0.1:8788/v1", api_key="sk-1")
+        text = open(cfg2, encoding="utf-8").read()
+        check("re-run: exactly one retry block",
+              text.count("[model_providers.gateway-retry]") == 1)
+        with open(cfg2 + cc.BACKUP_SUFFIX, encoding="utf-8") as fh:
+            check("re-run: backup not overwritten", fh.read() == pristine)
+
+        # no key -> env_key variant
+        cc.write_config(cfg2, "gateway", "http://127.0.0.1:8788/v1")
+        text = open(cfg2, encoding="utf-8").read()
+        check("no key: env_key written", 'env_key = "SUB2API_API_KEY"' in text)
+
+        # switching modes replaces the block
+        cc.write_config(cfg2, "direct", "http://127.0.0.1:8787")
+        text = open(cfg2, encoding="utf-8").read()
+        check("mode switch removes the old block", "gateway-retry" not in text)
+        check("mode switch writes the new block", "[model_providers.openai-retry]" in text)
+
+        # TOML still parses (python 3.11+ has tomllib; skip silently below)
+        try:
+            import tomllib
+            with open(cfg2, "rb") as fh:
+                tomllib.load(fh)
+            check("written config parses as TOML", True)
+        except ImportError:
+            pass
+        except Exception as exc:  # noqa: BLE001
+            check("written config parses as TOML", False, str(exc))
+
+        # restore
+        cc.restore_config(cfg2)
+        with open(cfg2, encoding="utf-8") as fh:
+            check("restore returns the original", fh.read() == original)
+
+
 # ---------------------------------------------------------------- e2e tests
 def e2e_tests():
     print("e2e: in-band overload absorbed (the production shape)")
@@ -301,6 +378,7 @@ def main():
     args = ap.parse_args()
     print(f"python {sys.version.split()[0]}\n")
     unit_tests()
+    config_tool_tests()
     if not args.unit:
         e2e_tests()
     print()

@@ -29,7 +29,8 @@ This is the **universal edition**: one relay, two modes, three platforms.
 | 2 | **Cross-platform installers** | Windows `install.ps1 -Mode Direct\|Gateway`, macOS `install-mac.sh` (LaunchAgent; Apple Silicon and Intel — the relay is pure stdlib Python, the CPU never comes into it), Linux `install-linux.sh` (systemd --user). All print the exact per-mode config.toml block. |
 | 3 | **Cooling detection is opt-in per mode** (`--cooling-latency`) | The cockpit edition's "503 under 200 ms = pool cooldown" heuristic is right for local gateways but wrong for chatgpt.com itself. Default: 0.2 s in gateway mode, off in direct mode. |
 | 4 | **relayctl works everywhere** | Port-owner hints per OS, default relay auto-detection (8788 then 8787), probe auth from `SUB2API_API_KEY` / `GATEWAY_API_KEY` env or the cockpit config file. |
-| 5 | **Tests run on all three OSes in CI** | The suite (49 assertions) runs on ubuntu, macOS (Intel + ARM runners) and windows, so the cross-platform claim is exercised, not asserted. |
+| 5 | **Tests run on all three OSes in CI** | The suite (64 assertions) runs on ubuntu, macOS (Intel + ARM runners) and windows, so the cross-platform claim is exercised, not asserted. |
+| 6 | **`tools/configure_codex.py` + `--write-config` installers** | The original (and the cockpit edition) only *print* the config.toml snippet — a real barrier for non-technical users. Installers can now edit `~/.codex/config.toml` themselves: pristine backup kept, idempotent re-runs, mode switching, one-command restore. Double-click `quick-install-*.bat/.command` wrappers make the whole install zero-touch apart from pasting the gateway key. |
 
 ## What came from the cockpit edition
 
