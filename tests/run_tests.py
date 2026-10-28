@@ -106,12 +106,15 @@ def start_mock_and_relay(mode, fails, mock_flags=(), relay_flags=()):
     suite tests.
     """
     last_out = ""
-    for _ in range(5):
+    for attempt in range(5):
         mport, rport = free_port(), free_port()
+        t0 = time.time()
         mock = Running([PY, MOCK, mode, str(fails), str(mport)] + list(mock_flags))
         if not wait_port(mport, timeout=60):
             last_out = mock.tail(5)
+            print(f"  start attempt {attempt + 1}: mock never answered after {time.time() - t0:.0f}s", flush=True)
             continue
+        t_mock = time.time() - t0
         # relay_flags may contain "{mport}" placeholders (e.g. for --upstream).
         flags = [f.format(mport=mport) for f in relay_flags]
         relayp = Running([PY, RELAY, "--port", str(rport),
@@ -121,9 +124,12 @@ def start_mock_and_relay(mode, fails, mock_flags=(), relay_flags=()):
                           "--retries-per-sec", "0"] + flags)
         if not wait_port(rport, timeout=60):
             last_out = relayp.tail(5)
+            print(f"  start attempt {attempt + 1}: mock up in {t_mock:.0f}s, relay never answered after {time.time() - t0:.0f}s", flush=True)
             relayp.stop()
             mock.stop()
             continue
+        if t_mock + (time.time() - t0 - t_mock) > 5:
+            print(f"  start attempt {attempt + 1}: slow spawn (mock {t_mock:.0f}s, relay {time.time() - t0 - t_mock:.0f}s) - absorbed", flush=True)
         return mock, relayp, mport, rport
     raise AssertionError(f"mock/relay did not start (mode={mode}); last output:\n{last_out}")
 
@@ -394,6 +400,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--unit", action="store_true")
     args = ap.parse_args()
+    # Line-buffer stdout so CI logs show real progress even through a pipe;
+    # a 20-minute hang with everything flushed at kill time is undiagnosable.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError):
+        pass
     print(f"python {sys.version.split()[0]}\n")
     unit_tests()
     config_tool_tests()

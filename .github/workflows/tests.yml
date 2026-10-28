@@ -21,14 +21,16 @@ jobs:
   suite:
     name: relay test suite (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    # Headroom for slow process spawn observed on loaded macOS runners.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         # The relay and the suite are pure stdlib Python, so the same tests
-        # double as the cross-platform claim: Linux, macOS (Intel and Apple
-        # Silicon runners) and Windows all run them unchanged.
-        os: [ubuntu-latest, macos-latest, macos-13, windows-latest]
+        # double as the cross-platform claim. Intel macOS runners (macos-13)
+        # are retired on GitHub Actions; Intel coverage comes from the relay
+        # being architecture-independent Python, verified on Intel hardware.
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
