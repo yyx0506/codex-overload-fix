@@ -96,18 +96,20 @@ def http_get(port, path):
 
 
 def start_mock_and_relay(mode, fails, mock_flags=(), relay_flags=()):
-    """Start mock + relay on fresh ports, retrying on the port race.
+    """Start mock + relay on fresh ports, retrying on port races and slow CI.
 
-    free_port() releases the socket before the child binds it, so on a busy
-    CI runner the chosen port can be snatched in between and the child dies
-    with "address already in use" (observed as a flake on macos-latest).
-    Re-rolling the ports a few times makes that harmless.
+    Two failure shapes on busy hosted runners, both environmental:
+    free_port() releases its socket before the child binds (port snatched ->
+    "address already in use"), and under heavy load a Python child can take
+    tens of seconds from spawn to bind - macos-latest has been observed doing
+    >15s. 60s waits x 5 attempts absorbs both; startup speed is not what the
+    suite tests.
     """
     last_out = ""
-    for _ in range(4):
+    for _ in range(5):
         mport, rport = free_port(), free_port()
         mock = Running([PY, MOCK, mode, str(fails), str(mport)] + list(mock_flags))
-        if not wait_port(mport, timeout=15):
+        if not wait_port(mport, timeout=60):
             last_out = mock.tail(5)
             continue
         # relay_flags may contain "{mport}" placeholders (e.g. for --upstream).
@@ -117,7 +119,7 @@ def start_mock_and_relay(mode, fails, mock_flags=(), relay_flags=()):
                           "--backoff-base", "0.05", "--backoff-max", "0.2",
                           "--max-attempts", "6", "--conn-budget", "6",
                           "--retries-per-sec", "0"] + flags)
-        if not wait_port(rport, timeout=15):
+        if not wait_port(rport, timeout=60):
             last_out = relayp.tail(5)
             relayp.stop()
             mock.stop()
@@ -324,14 +326,14 @@ def e2e_tests():
 
     print("e2e: dead upstream fails fast instead of thinking for 5 minutes")
     dead = free_port()          # nothing listening there
-    for _ in range(4):
+    for _ in range(5):
         rport = free_port()
         rp = Running([PY, RELAY, "--port", str(rport),
                       "--upstream", f"http://127.0.0.1:{dead}",
                       "--backoff-base", "0.05", "--backoff-max", "0.2",
                       "--max-attempts", "30", "--max-conn-attempts", "3",
                       "--conn-budget", "4", "--retries-per-sec", "0"])
-        if wait_port(rport, timeout=15):
+        if wait_port(rport, timeout=60):
             break
         rp.stop()
     else:
